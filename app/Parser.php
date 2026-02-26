@@ -2,13 +2,11 @@
 
 namespace App;
 
-use App\Commands\Visit;
-
 final class Parser
 {
     private const WORKER_COUNT = 10;
-    private const READ_BUF = 4_194_304;    // 4 MB per read
-    private const PROBE_SIZE = 2_097_152;  // 2 MB to discover slugs
+    private const READ_BUF = 1 << 14;    // 16 KB per read
+    private const PROBE_SIZE = 1 << 20;  // 2 MB to discover slugs
 
     public function parse($inputPath, $outputPath)
     {
@@ -61,22 +59,11 @@ final class Parser
             $slug = \substr($sample, $cur + 25, $eol - $cur - 51);
             if (!isset($slugToId[$slug])) {
                 $slugToId[$slug] = $totalSlugs;
-                $slugList[$totalSlugs] = $slug;
-                $totalSlugs++;
+                $slugList[$totalSlugs++] = $slug;
             }
             $cur = $eol + 1;
         }
         unset($sample);
-
-        // Ensure every known Visit slug is registered
-        foreach (Visit::all() as $v) {
-            $slug = \substr($v->uri, 25);
-            if (!isset($slugToId[$slug])) {
-                $slugToId[$slug] = $totalSlugs;
-                $slugList[$totalSlugs] = $slug;
-                $totalSlugs++;
-            }
-        }
 
         // ── Compute line-aligned chunk boundaries ──
         $edges = [0];
@@ -177,30 +164,6 @@ final class Parser
             }
 
             $p = 0;
-            // Unrolled x4 — safe as long as 4 max-length lines fit in the gap
-            $safe = $lastNl - 480;
-
-            while ($p < $safe) {
-                $nl = \strpos($chunk, "\n", $p + 52);
-                $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
-                    .= $dateChars[\substr($chunk, $nl - 23, 8)];
-                $p = $nl + 1;
-
-                $nl = \strpos($chunk, "\n", $p + 52);
-                $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
-                    .= $dateChars[\substr($chunk, $nl - 23, 8)];
-                $p = $nl + 1;
-
-                $nl = \strpos($chunk, "\n", $p + 52);
-                $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
-                    .= $dateChars[\substr($chunk, $nl - 23, 8)];
-                $p = $nl + 1;
-
-                $nl = \strpos($chunk, "\n", $p + 52);
-                $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
-                    .= $dateChars[\substr($chunk, $nl - 23, 8)];
-                $p = $nl + 1;
-            }
 
             // Tail lines that didn't fit the unrolled batch
             while ($p < $lastNl) {
@@ -242,7 +205,7 @@ final class Parser
         $totalDates,
     ) {
         $fh = \fopen($outputPath, 'wb');
-        \stream_set_write_buffer($fh, 1_048_576);
+        \stream_set_write_buffer($fh, 1 << 14);
 
         // Pre-format the repeating pieces once
         $dtPrefixes = [];
