@@ -2,7 +2,6 @@
 
 namespace App;
 
-
 final class Parser
 {
     public function parse(string $inputPath, string $outputPath): void
@@ -15,16 +14,15 @@ final class Parser
 
         $stats = [];
         while ($line = fgets($fh)) {
-            $offset = 19; // skip "https://stitcher.io/"
-            $comma = strpos($line, ",", $offset);
-            $path = substr($line, $offset, $comma - $offset); // parse path
-            $date = substr($line, $comma+1, 10); // parse date
+            $comma = \strpos($line, ",", 19);
+            $path = \substr($line, $offset, $comma - 19); // parse path
+            $date = \substr($line, $comma+1, 10); // parse date
             $stats[$path][$date] = ($stats[$path][$date] ?? 0) + 1;
         }
 
         // sort each array item in $stats by date key
         foreach ($stats as $path => $dates) {
-            ksort($dates);
+            \ksort($dates);
             $stats[$path] = $dates;
         }
 
