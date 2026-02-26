@@ -10,16 +10,16 @@ final class Parser
         // $data = file_get_contents($inputPath);
         $fh = \fopen($inputPath, "r");
         $stats = [];
-        while ($line = fgets($fh)) {
+        while ($line = \fgets($fh)) {
             $comma = \strpos($line, ",", 19);
-            $path = \substr($line, $offset, $comma - 19); // parse path
+            $path = \substr($line, 0, $comma - 19); // parse path
             $date = \substr($line, $comma+1, 10); // parse date
             $stats[$path][$date] = ($stats[$path][$date] ?? 0) + 1;
         }
 
         // sort each array item in $stats by date key
         foreach ($stats as $path => $dates) {
-            \ksort($dates);
+            \ksort($dates, SORT_STRING);
             $stats[$path] = $dates;
         }
 
