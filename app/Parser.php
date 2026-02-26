@@ -1,24 +1,27 @@
 <?php
 
+// JIT is disabled for the challenge, so probably faster without strict types?
+// declare(strict_types=1);
+
 namespace App;
 
 use App\Commands\Visit;
 
 final class Parser
 {
-    private const WORKER_COUNT = 10;
-    private const READ_BUF = 4_194_304;    // 4 MB per read
-    private const PROBE_SIZE = 2_097_152;  // 2 MB to discover slugs
+    private const WORKER_COUNT = 13;
+    private const READ_BUF = 4_194_304;
+    private const PROBE_SIZE = 2_097_152;
 
-    public function parse(string $inputPath, string $outputPath): void
+    public function parse($inputPath, $outputPath): void
     {
         \gc_disable();
 
         $fileSize = \filesize($inputPath);
 
         // ── Enumerate every possible calendar date as a compact 2-byte id ──
-        $dateChars  = [];   // "YY-MM-DD" → 2-byte string (little-endian id)
-        $dateLabels = [];   // id → "YY-MM-DD"
+        $dateChars  = [];
+        $dateLabels = [];
         $totalDates = 0;
 
         for ($yr = 20; $yr <= 26; $yr++) {
@@ -41,8 +44,8 @@ final class Parser
         }
 
         // ── Discover slug→id map by scanning the first ~2 MB ──
-        $slugToId  = [];
-        $slugList  = [];
+        $slugToId   = [];
+        $slugList   = [];
         $totalSlugs = 0;
 
         $probe = \fopen($inputPath, 'rb');
@@ -57,7 +60,6 @@ final class Parser
         while ($cur < $bound) {
             $eol = \strpos($sample, "\n", $cur + 52);
             if ($eol === false) break;
-            // 25 = strlen("https://stitcher.io/blog/"), 51 = 25 + 1(comma) + 25(datetime)
             $slug = \substr($sample, $cur + 25, $eol - $cur - 51);
             if (!isset($slugToId[$slug])) {
                 $slugToId[$slug] = $totalSlugs;
@@ -68,7 +70,6 @@ final class Parser
         }
         unset($sample);
 
-        // Ensure every known Visit slug is registered
         foreach (Visit::all() as $v) {
             $slug = \substr($v->uri, 25);
             if (!isset($slugToId[$slug])) {
@@ -90,7 +91,7 @@ final class Parser
         $edges[] = $fileSize;
 
         // ── Fork workers ──
-        $dir   = \sys_get_temp_dir();
+        $dir   = \is_dir('/dev/shm') ? '/dev/shm' : \sys_get_temp_dir();
         $myPid = \getmypid();
         $kids  = [];
 
@@ -106,7 +107,23 @@ final class Parser
                     $inputPath, $edges[$w], $edges[$w + 1],
                     $slugToId, $dateChars, $totalSlugs, $totalDates,
                 );
-                \file_put_contents($path, \pack('V*', ...$result));
+
+                // Chunked pack — avoids splatting ~588K args at once
+                $fh = \fopen($path, 'wb');
+                $batch = [];
+                $bc = 0;
+                foreach ($result as $v) {
+                    $batch[] = $v;
+                    if (++$bc === 8192) {
+                        \fwrite($fh, \pack('V*', ...$batch));
+                        $batch = [];
+                        $bc = 0;
+                    }
+                }
+                if ($batch) {
+                    \fwrite($fh, \pack('V*', ...$batch));
+                }
+                \fclose($fh);
                 exit(0);
             }
             $kids[] = [$pid, $path];
@@ -123,7 +140,7 @@ final class Parser
         // ── Merge child results ──
         foreach ($kids as [$cpid, $tmpPath]) {
             \pcntl_waitpid($cpid, $st);
-            $blob  = \file_get_contents($tmpPath);
+            $blob = \file_get_contents($tmpPath);
             \unlink($tmpPath);
             $vals = \unpack('V*', $blob);
             $i = 0;
@@ -138,20 +155,12 @@ final class Parser
 
     /**
      * Parse a byte-range of the CSV into a flat counts array.
-     *
-     * Instead of incrementing nested arrays on every line, we append a
-     * compact 2-byte date-id to a per-slug string bucket.  At the end we
-     * unpack each bucket in one shot — far fewer hash-table operations.
      */
     private function crunch(
-        string $file,
-        int    $from,
-        int    $to,
-        array  $slugToId,
-        array  $dateChars,
-        int    $totalSlugs,
-        int    $totalDates,
-    ): array {
+        $file, $from, $to,
+        $slugToId, $dateChars,
+        $totalSlugs, $totalDates,
+    ) {
         $bins = \array_fill(0, $totalSlugs, '');
 
         $fh = \fopen($file, 'rb');
@@ -169,7 +178,6 @@ final class Parser
             $lastNl = \strrpos($chunk, "\n");
             if ($lastNl === false) break;
 
-            // Rewind file pointer past unfinished trailing line
             $overshoot = $cLen - $lastNl - 1;
             if ($overshoot > 0) {
                 \fseek($fh, -$overshoot, \SEEK_CUR);
@@ -177,8 +185,7 @@ final class Parser
             }
 
             $p = 0;
-            // Unrolled x4 — safe as long as 4 max-length lines fit in the gap
-            $safe = $lastNl - 480;
+            $safe = $lastNl - 720;
 
             while ($p < $safe) {
                 $nl = \strpos($chunk, "\n", $p + 52);
@@ -200,9 +207,18 @@ final class Parser
                 $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
                     .= $dateChars[\substr($chunk, $nl - 23, 8)];
                 $p = $nl + 1;
+
+                $nl = \strpos($chunk, "\n", $p + 52);
+                $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
+                    .= $dateChars[\substr($chunk, $nl - 23, 8)];
+                $p = $nl + 1;
+
+                $nl = \strpos($chunk, "\n", $p + 52);
+                $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
+                    .= $dateChars[\substr($chunk, $nl - 23, 8)];
+                $p = $nl + 1;
             }
 
-            // Tail lines that didn't fit the unrolled batch
             while ($p < $lastNl) {
                 $nl = \strpos($chunk, "\n", $p + 52);
                 if ($nl === false) break;
@@ -214,7 +230,6 @@ final class Parser
 
         \fclose($fh);
 
-        // Tally: unpack each slug's bucket of 2-byte date ids into counts
         $grid = \array_fill(0, $totalSlugs * $totalDates, 0);
 
         for ($s = 0; $s < $totalSlugs; $s++) {
@@ -229,22 +244,16 @@ final class Parser
     }
 
     /**
-     * Stream well-formatted JSON without json_encode overhead.
-     * Dates come out sorted automatically because the id space is
-     * chronological (year 2020 → 2026).
+     * Stream well-formatted JSON with buffered writes.
+     * Dates come out sorted because the id space is chronological.
      */
     private function writeOutput(
-        string $outputPath,
-        array  $grid,
-        array  $slugList,
-        array  $dateLabels,
-        int    $totalSlugs,
-        int    $totalDates,
-    ): void {
+        $outputPath, $grid, $slugList,
+        $dateLabels, $totalSlugs, $totalDates,
+    ) {
         $fh = \fopen($outputPath, 'wb');
         \stream_set_write_buffer($fh, 1_048_576);
 
-        // Pre-format the repeating pieces once
         $dtPrefixes = [];
         for ($d = 0; $d < $totalDates; $d++) {
             $dtPrefixes[$d] = '        "20' . $dateLabels[$d] . '": ';
@@ -257,12 +266,12 @@ final class Parser
                 . '"';
         }
 
-        \fwrite($fh, '{');
+        $buf   = '{';
         $first = true;
 
         for ($s = 0; $s < $totalSlugs; $s++) {
-            $base = $s * $totalDates;
-            $body = '';
+            $base  = $s * $totalDates;
+            $body  = '';
             $comma = '';
 
             for ($d = 0; $d < $totalDates; $d++) {
@@ -274,17 +283,20 @@ final class Parser
 
             if ($body === '') continue;
 
-            \fwrite(
-                $fh,
-                ($first ? '' : ',')
+            $buf .= ($first ? '' : ',')
                 . "\n    " . $escapedSlugs[$s] . ": {\n"
                 . $body
-                . "\n    }",
-            );
+                . "\n    }";
             $first = false;
+
+            if (\strlen($buf) > 65536) {
+                \fwrite($fh, $buf);
+                $buf = '';
+            }
         }
 
-        \fwrite($fh, "\n}");
+        $buf .= "\n}";
+        \fwrite($fh, $buf);
         \fclose($fh);
     }
 }
