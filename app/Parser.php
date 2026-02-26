@@ -2,11 +2,13 @@
 
 namespace App;
 
+use App\Commands\Visit;
+
 final class Parser
 {
     private const WORKER_COUNT = 10;
-    private const READ_BUF = 1 << 14;    // 16 KB per read
-    private const PROBE_SIZE = 1 << 20;  // 2 MB to discover slugs
+    private const READ_BUF = 16384;
+    private const PROBE_SIZE = 1048576;
 
     public function parse($inputPath, $outputPath)
     {
@@ -38,13 +40,12 @@ final class Parser
             }
         }
 
-        // ── Discover slug→id map by scanning the first ~2 MB ──
+        // ── Discover slug→id map by scanning the first X MB ──
         $slugToId  = [];
         $slugList  = [];
-        $totalSlugs = 0;
 
         $probe = \fopen($inputPath, 'rb');
-        \stream_set_read_buffer($probe, 0);
+        \stream_set_read_buffer($probe, 16384);
         $probeLen = $fileSize > self::PROBE_SIZE ? self::PROBE_SIZE : $fileSize;
         $sample   = \fread($probe, $probeLen);
         \fclose($probe);
@@ -58,12 +59,22 @@ final class Parser
             // 25 = strlen("https://stitcher.io/blog/"), 51 = 25 + 1(comma) + 25(datetime)
             $slug = \substr($sample, $cur + 25, $eol - $cur - 51);
             if (!isset($slugToId[$slug])) {
-                $slugToId[$slug] = $totalSlugs;
-                $slugList[$totalSlugs++] = $slug;
+                $slugToId[$slug] = \count($slugList);
+                $slugList[] = $slug;
             }
             $cur = $eol + 1;
         }
         unset($sample);
+
+        // Ensure every known Visit slug is registered
+        // We can't just take this list as the URL's are picked at random
+        foreach (Visit::all() as $v) {
+            $slug = \substr($v->uri, 25);
+            if (!isset($slugToId[$slug])) {
+                $slugToId[$slug] = \count($slugList);
+                $slugList[] = $slug;
+            }
+        }
 
         // ── Compute line-aligned chunk boundaries ──
         $edges = [0];
@@ -91,7 +102,7 @@ final class Parser
             if ($pid === 0) {
                 $result = $this->crunch(
                     $inputPath, $edges[$w], $edges[$w + 1],
-                    $slugToId, $dateChars, $totalSlugs, $totalDates,
+                    $slugToId, $dateChars,  \count($slugList), $totalDates
                 );
                 \file_put_contents($path, \pack('V*', ...$result));
                 exit(0);
@@ -104,7 +115,7 @@ final class Parser
             $inputPath,
             $edges[self::WORKER_COUNT - 1],
             $edges[self::WORKER_COUNT],
-            $slugToId, $dateChars, $totalSlugs, $totalDates,
+            $slugToId, $dateChars, \count($slugList), $totalDates,
         );
 
         // ── Merge child results ──
@@ -120,7 +131,7 @@ final class Parser
         }
 
         // ── Stream JSON output ──
-        $this->writeOutput($outputPath, $grid, $slugList, $dateLabels, $totalSlugs, $totalDates);
+        $this->writeOutput($outputPath, $grid, $slugList, $dateLabels);
     }
 
     /**
@@ -142,7 +153,7 @@ final class Parser
         $bins = \array_fill(0, $totalSlugs, '');
 
         $fh = \fopen($file, 'rb');
-        \stream_set_read_buffer($fh, 0);
+        \stream_set_read_buffer($fh, 16384);
         \fseek($fh, $from);
         $left = $to - $from;
 
@@ -196,55 +207,56 @@ final class Parser
         $outputPath,
         $grid,
         $slugList,
-        $dateLabels,
-        $totalSlugs,
-        $totalDates,
+        $dateLabels
     ) {
         $fh = \fopen($outputPath, 'wb');
-        \stream_set_write_buffer($fh, 1 << 12);
+        $output = "";
+        \stream_set_write_buffer($fh, 16384);
 
         // Pre-format the repeating pieces once
-        $dtPrefixes = [];
-        for ($d = 0; $d < $totalDates; $d++) {
-            $dtPrefixes[$d] = '        "20' . $dateLabels[$d] . '": ';
-        }
+        $dtPrefixes = array_map(
+            function($d) { return "        \"20{$d}\": "; },
+            $dateLabels
+        );
+        $totalDates = \count($dateLabels);
 
-        $escapedSlugs = [];
-        for ($s = 0; $s < $totalSlugs; $s++) {
-            $escapedSlugs[$s] = '"\\/blog\\/'
-                . addcslashes($slugList[$s], '/')
-                . '"';
-        }
+        $escapedSlugs = array_map(function($s) {
+           return '"\\/blog\\/' . \str_replace('/', '\\/', $s) . '"';
+        }, $slugList);
+        $totalSlugs = \count($slugList);
 
+
+        // $output .= '{';
         \fwrite($fh, '{');
-        $prefix = "";
-        $start = microtime(true);
+        $prefix = '';
 
         for ($s = 0; $s < $totalSlugs; $s++) {
             $base = $s * $totalDates;
             $body = '';
+            $comma = '';
 
-            // first date key (without prefix
-            $d = 0;
-            for (; $grid[$base+$d] === 0; $d++) {};
-            $n = $grid[$base + $d];
-            $body .= $dtPrefixes[$d] . $n;
-
-            // rest of the date keys (with prefix)
-            for ($d++; $d < $totalDates; $d++) {
+            for ($d = 0; $d < $totalDates; $d++) {
                 $n = $grid[$base + $d];
                 if ($n === 0) continue;
-                $body .= ",\n" . $dtPrefixes[$d] . $n;
+                $body .= $comma . $dtPrefixes[$d] . $n;
+                $comma = ",\n";
             }
 
             if ($body === '') continue;
 
             \fwrite($fh, "{$prefix}\n    {$escapedSlugs[$s]}: {\n{$body}\n    }");
-            $prefix = ",";
+            // $output .= "{$prefix}\n    {$escapedSlugs[$s]}: {\n{$body}\n    }";
+            $prefix = ',';
+            // if (\strlen($output) > 1024*512) {
+            //     \fwrite($fh, $output);
+            //     $output = '';
+            // }
         }
 
-        fprintf(STDERR, "JSON output done in %.2f seconds\n", microtime(true) - $start);
+        // $output .= "\n}";
+        // \fwrite($fh, $output);
         \fwrite($fh, "\n}");
         \fclose($fh);
+
     }
 }
