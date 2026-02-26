@@ -7,12 +7,11 @@ final class Parser
     public function parse(string $inputPath, string $outputPath): void
     {
         $fh = \fopen($inputPath, 'rb');
-        \stream_set_read_buffer($fh, 1 << 24);
         $stats = [];
         $remainder = '';
 
         while (true) {
-            $chunk = \fread($fh, 1 << 24);
+            $chunk = \fread($fh, 1 << 15);
 
             if ($chunk === '' || $chunk === false) {
                 break;
