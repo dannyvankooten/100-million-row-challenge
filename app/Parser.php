@@ -163,15 +163,11 @@ final class Parser
                 $left += $overshoot;
             }
 
-            $p = 0;
-
-            // Tail lines that didn't fit the unrolled batch
-            while ($p < $lastNl) {
+            for ($p = 0, $nl = 0; $p < $lastNl; $p = $nl + 1) {
                 $nl = \strpos($chunk, "\n", $p + 52);
                 if ($nl === false) break;
                 $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
                     .= $dateChars[\substr($chunk, $nl - 23, 8)];
-                $p = $nl + 1;
             }
         }
 
@@ -205,7 +201,7 @@ final class Parser
         $totalDates,
     ) {
         $fh = \fopen($outputPath, 'wb');
-        \stream_set_write_buffer($fh, 1 << 14);
+        \stream_set_write_buffer($fh, 1 << 12);
 
         // Pre-format the repeating pieces once
         $dtPrefixes = [];
@@ -216,37 +212,38 @@ final class Parser
         $escapedSlugs = [];
         for ($s = 0; $s < $totalSlugs; $s++) {
             $escapedSlugs[$s] = '"\\/blog\\/'
-                . \str_replace('/', '\\/', $slugList[$s])
+                . addcslashes($slugList[$s], '/')
                 . '"';
         }
 
         \fwrite($fh, '{');
-        $first = true;
+        $prefix = "";
+        $start = microtime(true);
 
         for ($s = 0; $s < $totalSlugs; $s++) {
             $base = $s * $totalDates;
             $body = '';
-            $comma = '';
 
-            for ($d = 0; $d < $totalDates; $d++) {
+            // first date key (without prefix
+            $d = 0;
+            for (; $grid[$base+$d] === 0; $d++) {};
+            $n = $grid[$base + $d];
+            $body .= $dtPrefixes[$d] . $n;
+
+            // rest of the date keys (with prefix)
+            for ($d++; $d < $totalDates; $d++) {
                 $n = $grid[$base + $d];
                 if ($n === 0) continue;
-                $body .= $comma . $dtPrefixes[$d] . $n;
-                $comma = ",\n";
+                $body .= ",\n" . $dtPrefixes[$d] . $n;
             }
 
             if ($body === '') continue;
 
-            \fwrite(
-                $fh,
-                ($first ? '' : ',')
-                . "\n    " . $escapedSlugs[$s] . ": {\n"
-                . $body
-                . "\n    }",
-            );
-            $first = false;
+            \fwrite($fh, "{$prefix}\n    {$escapedSlugs[$s]}: {\n{$body}\n    }");
+            $prefix = ",";
         }
 
+        fprintf(STDERR, "JSON output done in %.2f seconds\n", microtime(true) - $start);
         \fwrite($fh, "\n}");
         \fclose($fh);
     }
