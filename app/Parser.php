@@ -8,10 +8,7 @@ final class Parser
     {
         // file is 7GB, memory is 1.5GB... can't read in one go
         // $data = file_get_contents($inputPath);
-        $fh = fopen($inputPath, "r");
-        $i = 0;
-        $offset = 0;
-
+        $fh = \fopen($inputPath, "r");
         $stats = [];
         while ($line = fgets($fh)) {
             $comma = \strpos($line, ",", 19);
@@ -26,6 +23,7 @@ final class Parser
             $stats[$path] = $dates;
         }
 
-        file_put_contents($outputPath, json_encode($stats, JSON_PRETTY_PRINT));
+        \file_put_contents($outputPath, \json_encode($stats, JSON_PRETTY_PRINT));
+        \fclose($fh);
     }
 }
