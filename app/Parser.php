@@ -112,7 +112,7 @@ final class Parser
                     $inputPath, $edges[$w], $edges[$w + 1],
                     $slugToId, $dateChars,  \count($slugList), $totalDates
                 );
-                \file_put_contents($path, \pack('I*', ...$result));
+                \file_put_contents($path, \pack('C*', ...$result));
                 exit(0);
             }
             $kids[] = [$pid, $path];
@@ -132,7 +132,7 @@ final class Parser
         foreach ($kids as [$pid, $tmpPath]) {
             \pcntl_waitpid($pid, $status);
             $i = 0;
-            foreach (\unpack('I*',\file_get_contents($tmpPath)) as $v) {
+            foreach (\unpack('C*',\file_get_contents($tmpPath)) as $v) {
                 $grid[$i++] += $v;
             }
             \unlink($tmpPath);
@@ -162,26 +162,41 @@ final class Parser
     ) {
         $bins = \array_fill(0, $totalSlugs, '');
 
-        // $fh = fopen($file, "r");
-        // stream_set_read_buffer($fh, 1024*1024);
-        // fseek($fh, $from);
-        // $chunk = fread($fh, $to - $from);
-        // fclose($fh);
+        $fh = \fopen($file, 'r');
+        \stream_set_read_buffer($fh, 0);
+        \fseek($fh, $from);
+        $left = $to - $from;
 
-        $chunk = \file_get_contents($file, false, null, $from, $to - $from);
-        $p = 0;
-        while (true) {
-            $nl = \strpos($chunk, "\n", $p);
-            if ($nl === false) break;
-            $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
-                .= $dateChars[\substr($chunk, $nl - 23, 8)];
-            $p = $nl + 1;
+        while ($left > 0) {
+            $chunk = \fread($fh, $left > 196608 ? 196608 : $left);
+            $cLen  = \strlen($chunk);
+            if ($cLen === 0) break;
+            $left -= $cLen;
+
+            $lastNl = \strrpos($chunk, "\n");
+            if ($lastNl === false) break;
+
+            // Rewind past the incomplete trailing line so the next
+            // fread starts exactly at a line boundary — no copying.
+            $overshoot = $cLen - $lastNl - 1;
+            if ($overshoot > 0) {
+                \fseek($fh, -$overshoot, \SEEK_CUR);
+                $left += $overshoot;
+            }
+
+            for ($p = 0; $p < $lastNl; ) {
+                $nl = \strpos($chunk, "\n", $p + 52);
+                if ($nl === false) break;
+                $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
+                    .= $dateChars[\substr($chunk, $nl - 23, 8)];
+                $p = $nl + 1;
+            }
         }
-        unset($chunk);
+
+        \fclose($fh);
 
         // Tally: unpack each slug's bucket of 2-byte date ids into counts
         $grid = \array_fill(0, $totalSlugs * $totalDates, 0);
-
         foreach ($bins as $s => $data) {
             if ($data === '') continue;
             $offset = $s * $totalDates;
@@ -206,7 +221,7 @@ final class Parser
     ) {
         $time = microtime(true);
         $fh = \fopen($outputPath, 'wb');
-        \stream_set_write_buffer($fh, self::WRITE_BUF);
+        \stream_set_write_buffer($fh, 1 << 16);
 
         // Pre-format the repeating pieces once
         $dates = [];
@@ -227,7 +242,6 @@ final class Parser
         $n = 0;
         $i = 0;
         foreach ($slugs as $s => $slug) {
-            // $base = $s * $totalDates;
             $body = '';
             $comma = '';
 
