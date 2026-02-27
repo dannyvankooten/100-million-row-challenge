@@ -20,7 +20,7 @@ final class Parser
 {
     private const WORKER_COUNT = 12;
     private const WRITE_BUF = 1048576;
-    private const READ_BUF = 131072;
+    private const READ_BUF = 262144;
     private const PROBE_SIZE = 524288;
 
     public function parse($inputPath, $outputPath)
