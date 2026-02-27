@@ -4,12 +4,24 @@ namespace App;
 
 use App\Commands\Visit;
 
+// potential buffer sizes:
+// 1 << 14 = 16384
+// 1 << 15 = 32768
+// 1 << 16 = 65536
+// 1 << 17 = 131072
+// 1 << 18 = 262144
+// 1 << 19 = 524288
+// 1 << 20 = 1048576
+// 1 << 21 = 2097152
+// 1 << 22 = 4194304
+// 1 << 23 = 8388608
+
 final class Parser
 {
-    private const WORKER_COUNT = 8;
-    private const WRITE_BUF = 65536;
-    private const READ_BUF = 65536;
-    private const PROBE_SIZE = 1048576;
+    private const WORKER_COUNT = 10;
+    private const WRITE_BUF = 262144;
+    private const READ_BUF = 262144;
+    private const PROBE_SIZE = 524288;
 
     public function parse($inputPath, $outputPath)
     {
@@ -42,12 +54,13 @@ final class Parser
         }
 
         // ── Discover slug→id map by scanning the first X MB ──
+        $time = microtime(true);
         $slugToId  = [];
         $slugList  = [];
 
-        $probe = \fopen($inputPath, 'rb');
-        \stream_set_read_buffer($probe, self::READ_BUF);
-        $probeLen = $fileSize > self::PROBE_SIZE ? self::PROBE_SIZE : $fileSize;
+        $probe = \fopen($inputPath, 'r');
+        \stream_set_read_buffer($probe, 0);
+        $probeLen = (int) min($fileSize, self::PROBE_SIZE); //$fileSize > self::PROBE_SIZE ? self::PROBE_SIZE : $fileSize;
         $sample   = \fread($probe, $probeLen);
         \fclose($probe);
 
@@ -76,10 +89,13 @@ final class Parser
                 $slugList[] = $slug;
             }
         }
+        fprintf(STDERR, "slug discovery: %.2f seconds\n", microtime(true) - $time);
 
+
+        $time = microtime(true);
         // ── Compute line-aligned chunk boundaries ──
         $edges = [0];
-        $bh = \fopen($inputPath, 'rb');
+        $bh = \fopen($inputPath, 'r');
         for ($i = 1; $i < self::WORKER_COUNT; $i++) {
             \fseek($bh, (int) ($fileSize * $i / self::WORKER_COUNT));
             \fgets($bh);
@@ -87,13 +103,16 @@ final class Parser
         }
         \fclose($bh);
         $edges[] = $fileSize;
+        fprintf(STDERR, "compute boundaries: %.2f seconds\n", microtime(true) - $time);
+
 
         // ── Fork workers ──
+        $time = microtime(true);
         $dir   = \sys_get_temp_dir();
         $myPid = \getmypid();
         $kids  = [];
 
-        for ($w = 0; $w < self::WORKER_COUNT - 1; $w++) {
+        for ($w = 1; $w < self::WORKER_COUNT; $w++) {
             $path = "{$dir}/rc_{$myPid}_{$w}";
             $pid  = \pcntl_fork();
 
@@ -105,7 +124,7 @@ final class Parser
                     $inputPath, $edges[$w], $edges[$w + 1],
                     $slugToId, $dateChars,  \count($slugList), $totalDates
                 );
-                \file_put_contents($path, \pack('V*', ...$result));
+                \file_put_contents($path, \pack('C*', ...$result));
                 exit(0);
             }
             $kids[] = [$pid, $path];
@@ -114,22 +133,24 @@ final class Parser
         // Parent handles the last chunk directly
         $grid = $this->crunch(
             $inputPath,
-            $edges[self::WORKER_COUNT - 1],
-            $edges[self::WORKER_COUNT],
+            $edges[0],
+            $edges[1],
             $slugToId, $dateChars, \count($slugList), $totalDates,
         );
+        fprintf(STDERR, "all chunks: %.2f seconds\n", microtime(true) - $time);
 
         // ── Merge child results ──
-        foreach ($kids as [$cpid, $tmpPath]) {
-            \pcntl_waitpid($cpid, $st);
-            $blob  = \file_get_contents($tmpPath);
-            \unlink($tmpPath);
-            $vals = \unpack('V*', $blob);
+        $time = microtime(true);
+        foreach ($kids as [$pid, $tmpPath]) {
+            \pcntl_waitpid($pid, $status);
             $i = 0;
-            foreach ($vals as $v) {
+            foreach (\unpack('C*',\file_get_contents($tmpPath)) as $v) {
                 $grid[$i++] += $v;
             }
+            \unlink($tmpPath);
         }
+        fprintf(STDERR, "merge: %.2f seconds\n", microtime(true) - $time);
+
 
         // ── Stream JSON output ──
         $this->writeOutput($outputPath, $grid, $slugList, $dateLabels);
@@ -153,13 +174,13 @@ final class Parser
     ) {
         $bins = \array_fill(0, $totalSlugs, '');
 
-        $fh = \fopen($file, 'rb');
-        \stream_set_read_buffer($fh, self::READ_BUF);
+        $fh = \fopen($file, 'r');
+        \stream_set_read_buffer($fh, 0);
         \fseek($fh, $from);
         $left = $to - $from;
 
         while ($left > 0) {
-            $grab  = $left > self::READ_BUF ? self::READ_BUF : $left;
+            $grab  = (int) min($left, self::READ_BUF);
             $chunk = \fread($fh, $grab);
             $cLen  = \strlen($chunk);
             if ($cLen === 0) break;
@@ -188,10 +209,10 @@ final class Parser
         // Tally: unpack each slug's bucket of 2-byte date ids into counts
         $grid = \array_fill(0, $totalSlugs * $totalDates, 0);
 
-        for ($s = 0; $s < $totalSlugs; $s++) {
-            if ($bins[$s] === '') continue;
+        foreach ($bins as $s => $data) {
+            if ($data === '') continue;
             $offset = $s * $totalDates;
-            foreach (\unpack('v*', $bins[$s]) as $did) {
+            foreach (\unpack('v*', $data) as $did) {
                 $grid[$offset + $did]++;
             }
         }
@@ -210,54 +231,46 @@ final class Parser
         $slugList,
         $dateLabels
     ) {
+        $time = microtime(true);
         $fh = \fopen($outputPath, 'wb');
-        $output = "";
         \stream_set_write_buffer($fh, self::WRITE_BUF);
 
         // Pre-format the repeating pieces once
-        $dtPrefixes = array_map(
+        $dates = array_map(
             function($d) { return "        \"20{$d}\": "; },
             $dateLabels
         );
         $totalDates = \count($dateLabels);
-
-        $escapedSlugs = array_map(function($s) {
+        $slugs = array_map(function($s) {
            return '"\\/blog\\/' . \str_replace('/', '\\/', $s) . '"';
         }, $slugList);
-        $totalSlugs = \count($slugList);
 
-
-        // $output .= '{';
         \fwrite($fh, '{');
         $prefix = '';
-
-        for ($s = 0; $s < $totalSlugs; $s++) {
+        $body = '';
+        $comma = '';
+        $n = 0;
+        foreach ($slugs as $s => $slug) {
             $base = $s * $totalDates;
             $body = '';
             $comma = '';
 
-            for ($d = 0; $d < $totalDates; $d++) {
+            foreach ($dates as $d => $date) {
                 $n = $grid[$base + $d];
                 if ($n === 0) continue;
-                $body .= $comma . $dtPrefixes[$d] . $n;
+                $body .= $comma . $date . $n;
                 $comma = ",\n";
             }
 
-            if ($body === '') continue;
+            if (\strlen($body) === 0) {
+                continue;
+            }
 
-            \fwrite($fh, "{$prefix}\n    {$escapedSlugs[$s]}: {\n{$body}\n    }");
-            // $output .= "{$prefix}\n    {$escapedSlugs[$s]}: {\n{$body}\n    }";
+            \fwrite($fh, "{$prefix}\n    {$slug}: {\n{$body}\n    }");
             $prefix = ',';
-            // if (\strlen($output) > 1024*512) {
-            //     \fwrite($fh, $output);
-            //     $output = '';
-            // }
         }
-
-        // $output .= "\n}";
-        // \fwrite($fh, $output);
         \fwrite($fh, "\n}");
         \fclose($fh);
-
+        \fprintf(STDERR, "writeOutput: %.2f seconds\n", microtime(true) - $time);
     }
 }
