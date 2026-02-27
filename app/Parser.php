@@ -18,7 +18,7 @@ use App\Commands\Visit;
 
 final class Parser
 {
-    private const WORKER_COUNT = 8;
+    private const WORKER_COUNT = 10;
     private const WRITE_BUF = 1048576;
     private const PROBE_SIZE = 1048576;
 
@@ -225,13 +225,14 @@ final class Parser
         $body = '';
         $comma = '';
         $n = 0;
+        $i = 0;
         foreach ($slugs as $s => $slug) {
-            $base = $s * $totalDates;
+            // $base = $s * $totalDates;
             $body = '';
             $comma = '';
 
             foreach ($dates as $d => $date) {
-                $n = $grid[$base + $d];
+                $n = $grid[$i++];
                 if ($n === 0) continue;
                 $body .= $comma . $date . $n;
                 $comma = ",\n";
