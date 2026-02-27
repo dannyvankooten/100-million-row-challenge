@@ -20,7 +20,6 @@ final class Parser
 {
     private const WORKER_COUNT = 8;
     private const WRITE_BUF = 1048576;
-    private const READ_BUF = 65536;
     private const PROBE_SIZE = 1048576;
 
     public function parse($inputPath, $outputPath)
@@ -163,36 +162,22 @@ final class Parser
     ) {
         $bins = \array_fill(0, $totalSlugs, '');
 
-        $fh = \fopen($file, 'r');
-        \stream_set_read_buffer($fh, 0);
-        \fseek($fh, $from);
-        $left = $to - $from;
+        // $fh = fopen($file, "r");
+        // stream_set_read_buffer($fh, 1024*1024);
+        // fseek($fh, $from);
+        // $chunk = fread($fh, $to - $from);
+        // fclose($fh);
 
-        while ($left > 0) {
-            $chunk = \fread($fh, $left > self::READ_BUF ? self::READ_BUF : $left);
-            $cLen  = \strlen($chunk);
-            if ($cLen === 0) break;
-            $left -= $cLen;
-
-            if (($lastNl = \strrpos($chunk, "\n")) === false) break;
-
-            // Rewind file pointer past unfinished trailing line
-            $overshoot = $cLen - $lastNl - 1;
-            if ($overshoot > 0) {
-                \fseek($fh, -$overshoot, \SEEK_CUR);
-                $left += $overshoot;
-            }
-
-            for ($p = 0; $p < $lastNl; ) {
-                $nl = \strpos($chunk, "\n", $p + 52);
-                if ($nl === false) break;
-                $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
-                    .= $dateChars[\substr($chunk, $nl - 23, 8)];
-                $p = $nl + 1;
-            }
+        $chunk = \file_get_contents($file, false, null, $from, $to - $from);
+        $p = 0;
+        while (true) {
+            $nl = \strpos($chunk, "\n", $p);
+            if ($nl === false) break;
+            $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
+                .= $dateChars[\substr($chunk, $nl - 23, 8)];
+            $p = $nl + 1;
         }
-
-        \fclose($fh);
+        unset($chunk);
 
         // Tally: unpack each slug's bucket of 2-byte date ids into counts
         $grid = \array_fill(0, $totalSlugs * $totalDates, 0);
