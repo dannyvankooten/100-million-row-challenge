@@ -18,10 +18,10 @@ use App\Commands\Visit;
 
 final class Parser
 {
-    private const WORKER_COUNT = 12;
+    private const WORKER_COUNT = 8;
     private const WRITE_BUF = 1048576;
-    private const READ_BUF = 262144;
-    private const PROBE_SIZE = 524288;
+    private const READ_BUF = 65536;
+    private const PROBE_SIZE = 1048576;
 
     public function parse($inputPath, $outputPath)
     {
@@ -54,16 +54,14 @@ final class Parser
         }
 
         // ── Discover slug→id map by scanning the first X MB ──
-        $time = microtime(true);
         $slugToId  = [];
         $slugList  = [];
 
         $probe = \fopen($inputPath, 'r');
         \stream_set_read_buffer($probe, 0);
-        $probeLen = (int) min($fileSize, self::PROBE_SIZE); //$fileSize > self::PROBE_SIZE ? self::PROBE_SIZE : $fileSize;
+        $probeLen = (int) \min($fileSize, self::PROBE_SIZE); //$fileSize > self::PROBE_SIZE ? self::PROBE_SIZE : $fileSize;
         $sample   = \fread($probe, $probeLen);
         \fclose($probe);
-
         $cur   = 0;
         $bound = \strrpos($sample, "\n");
 
@@ -89,10 +87,7 @@ final class Parser
                 $slugList[] = $slug;
             }
         }
-        fprintf(STDERR, "slug discovery: %.2f seconds\n", microtime(true) - $time);
 
-
-        $time = microtime(true);
         // ── Compute line-aligned chunk boundaries ──
         $edges = [0];
         $bh = \fopen($inputPath, 'r');
@@ -103,11 +98,9 @@ final class Parser
         }
         \fclose($bh);
         $edges[] = $fileSize;
-        fprintf(STDERR, "compute boundaries: %.2f seconds\n", microtime(true) - $time);
-
 
         // ── Fork workers ──
-        $time = microtime(true);
+        $time = \microtime(true);
         $dir   = \sys_get_temp_dir();
         $myPid = \getmypid();
         $kids  = [];
@@ -133,10 +126,10 @@ final class Parser
             $edges[1],
             $slugToId, $dateChars, \count($slugList), $totalDates,
         );
-        fprintf(STDERR, "all chunks: %.2f seconds\n", microtime(true) - $time);
+        \fprintf(STDERR, "all chunks: %.2f seconds\n", \microtime(true) - $time);
 
         // ── Merge child results ──
-        $time = microtime(true);
+        $time = \microtime(true);
         foreach ($kids as [$pid, $tmpPath]) {
             \pcntl_waitpid($pid, $status);
             $i = 0;
@@ -145,7 +138,7 @@ final class Parser
             }
             \unlink($tmpPath);
         }
-        fprintf(STDERR, "merge: %.2f seconds\n", microtime(true) - $time);
+        \fprintf(STDERR, "merge: %.2f seconds\n", microtime(true) - $time);
 
 
         // ── Stream JSON output ──
@@ -176,14 +169,13 @@ final class Parser
         $left = $to - $from;
 
         while ($left > 0) {
-            $grab  = (int) min($left, self::READ_BUF);
+            $grab  = (int) \min($left, self::READ_BUF);
             $chunk = \fread($fh, $grab);
             $cLen  = \strlen($chunk);
             if ($cLen === 0) break;
             $left -= $cLen;
 
-            $lastNl = \strrpos($chunk, "\n");
-            if ($lastNl === false) break;
+            if (($lastNl = \strrpos($chunk, "\n")) === false) break;
 
             // Rewind file pointer past unfinished trailing line
             $overshoot = $cLen - $lastNl - 1;
