@@ -18,9 +18,9 @@ use App\Commands\Visit;
 
 final class Parser
 {
-    private const WORKER_COUNT = 10;
-    private const WRITE_BUF = 262144;
-    private const READ_BUF = 262144;
+    private const WORKER_COUNT = 12;
+    private const WRITE_BUF = 1048576;
+    private const READ_BUF = 131072;
     private const PROBE_SIZE = 524288;
 
     public function parse($inputPath, $outputPath)
@@ -115,16 +115,12 @@ final class Parser
         for ($w = 1; $w < self::WORKER_COUNT; $w++) {
             $path = "{$dir}/rc_{$myPid}_{$w}";
             $pid  = \pcntl_fork();
-
-            if ($pid === -1) {
-                throw new \RuntimeException('Fork failed');
-            }
             if ($pid === 0) {
                 $result = $this->crunch(
                     $inputPath, $edges[$w], $edges[$w + 1],
                     $slugToId, $dateChars,  \count($slugList), $totalDates
                 );
-                \file_put_contents($path, \pack('C*', ...$result));
+                \file_put_contents($path, \pack('I*', ...$result));
                 exit(0);
             }
             $kids[] = [$pid, $path];
@@ -144,7 +140,7 @@ final class Parser
         foreach ($kids as [$pid, $tmpPath]) {
             \pcntl_waitpid($pid, $status);
             $i = 0;
-            foreach (\unpack('C*',\file_get_contents($tmpPath)) as $v) {
+            foreach (\unpack('I*',\file_get_contents($tmpPath)) as $v) {
                 $grid[$i++] += $v;
             }
             \unlink($tmpPath);
@@ -236,14 +232,16 @@ final class Parser
         \stream_set_write_buffer($fh, self::WRITE_BUF);
 
         // Pre-format the repeating pieces once
-        $dates = array_map(
-            function($d) { return "        \"20{$d}\": "; },
-            $dateLabels
-        );
+        $dates = [];
+        foreach ($dateLabels as $d) {
+            $dates[] = "        \"20{$d}\": ";
+        }
         $totalDates = \count($dateLabels);
-        $slugs = array_map(function($s) {
-           return '"\\/blog\\/' . \str_replace('/', '\\/', $s) . '"';
-        }, $slugList);
+
+        $slugs = [];
+        foreach ($slugList as $s) {
+            $slugs[] = '"\\/blog\\/' . \str_replace('/', '\\/', $s) . '"';
+        }
 
         \fwrite($fh, '{');
         $prefix = '';
@@ -262,7 +260,7 @@ final class Parser
                 $comma = ",\n";
             }
 
-            if (\strlen($body) === 0) {
+            if ('' === $body) {
                 continue;
             }
 
