@@ -6,8 +6,9 @@ use App\Commands\Visit;
 
 final class Parser
 {
-    private const WORKER_COUNT = 10;
-    private const READ_BUF = 16384;
+    private const WORKER_COUNT = 8;
+    private const WRITE_BUF = 65536;
+    private const READ_BUF = 65536;
     private const PROBE_SIZE = 1048576;
 
     public function parse($inputPath, $outputPath)
@@ -45,7 +46,7 @@ final class Parser
         $slugList  = [];
 
         $probe = \fopen($inputPath, 'rb');
-        \stream_set_read_buffer($probe, 16384);
+        \stream_set_read_buffer($probe, self::READ_BUF);
         $probeLen = $fileSize > self::PROBE_SIZE ? self::PROBE_SIZE : $fileSize;
         $sample   = \fread($probe, $probeLen);
         \fclose($probe);
@@ -153,7 +154,7 @@ final class Parser
         $bins = \array_fill(0, $totalSlugs, '');
 
         $fh = \fopen($file, 'rb');
-        \stream_set_read_buffer($fh, 16384);
+        \stream_set_read_buffer($fh, self::READ_BUF);
         \fseek($fh, $from);
         $left = $to - $from;
 
@@ -211,7 +212,7 @@ final class Parser
     ) {
         $fh = \fopen($outputPath, 'wb');
         $output = "";
-        \stream_set_write_buffer($fh, 16384);
+        \stream_set_write_buffer($fh, self::WRITE_BUF);
 
         // Pre-format the repeating pieces once
         $dtPrefixes = array_map(
