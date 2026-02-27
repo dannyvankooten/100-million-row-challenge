@@ -169,8 +169,7 @@ final class Parser
         $left = $to - $from;
 
         while ($left > 0) {
-            $grab  = (int) \min($left, self::READ_BUF);
-            $chunk = \fread($fh, $grab);
+            $chunk = \fread($fh, $left > self::READ_BUF ? self::READ_BUF : $left);
             $cLen  = \strlen($chunk);
             if ($cLen === 0) break;
             $left -= $cLen;
@@ -184,11 +183,12 @@ final class Parser
                 $left += $overshoot;
             }
 
-            for ($p = 0, $nl = 0; $p < $lastNl; $p = $nl + 1) {
+            for ($p = 0; $p < $lastNl; ) {
                 $nl = \strpos($chunk, "\n", $p + 52);
                 if ($nl === false) break;
                 $bins[$slugToId[\substr($chunk, $p + 25, $nl - $p - 51)]]
                     .= $dateChars[\substr($chunk, $nl - 23, 8)];
+                $p = $nl + 1;
             }
         }
 
